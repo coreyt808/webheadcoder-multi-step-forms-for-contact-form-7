@@ -399,6 +399,10 @@ import '../scss/cf7msm.scss';
 					if ( cf7msmIsHoneypotFieldName(key, honeypotFieldNames) ) {
 						return true;
 					}
+					// Neither CF7 nor cf7msm saves null, but another plugin's filter could.
+					if ( val === null || typeof val === 'undefined' ) {
+						return true;
+					}
 					if ( key.indexOf('_') != 0 && key != 'cf7msm-step' && key != 'cf7msm_options') {
 						var field = cf7msm_form.find('*[name="' + key + '"]:not([data-cf7msm-previous])');
 						var checkbox_field = cf7msm_form.find('input[name="' + key + '[]"]:not([data-cf7msm-previous])'); //value is this or this or tihs
@@ -431,7 +435,7 @@ import '../scss/cf7msm.scss';
 								field.val(val);	
 							}
 						}
-						else if ( checkbox_field.length > 0 && val.constructor === Array ) {
+						else if ( checkbox_field.length > 0 && Array.isArray(val) ) {
 							//checkbox
 							if ( val != '' && val.length > 0  ) {
 								$.each(val, function(i, v){
@@ -456,7 +460,7 @@ import '../scss/cf7msm.scss';
 							}
 						}
 	
-						else if ( multiselect_field.length > 0 && val.constructor === Array ) {
+						else if ( multiselect_field.length > 0 && Array.isArray(val) ) {
 							var select_vals = val;
 							if (select_vals && select_vals.constructor !== Array) {
 								select_vals = [select_vals];
@@ -474,17 +478,29 @@ import '../scss/cf7msm.scss';
 					}
 				});
 
-				// if using conditional fields, get it to do its thing
-				cf7msm_form.find('input[name="_wpcf7cf_options"]').trigger('change');
-	
 				
+
+        cf7msmRefreshConditionalFields(cf7msm_form);
 			}
 		}
+
+    function cf7msmRefreshConditionalFields(form) {
+      form = $(form);
+      var optionsField = form.find('input[name="_wpcf7cf_options"]');
+      if (optionsField.length === 0) {
+        return;
+      }
+
+      
+
+      // Older versions without the cached model use their existing change handler.
+      optionsField.trigger('change');
+    }
 
 		var savedSubmit = wpcf7.submit;
 		wpcf7.submit = function( form, arg2 ) {
 			cf7msmBeforeSubmit( form, arg2 );
-			savedSubmit( form, arg2 );
+			return savedSubmit( form, arg2 );
 		};
 
 		function cf7msmBeforeSubmit( form ) {
@@ -503,6 +519,8 @@ import '../scss/cf7msm.scss';
 				form = $(cf7_form_arg);
 			}
 
+      // Replace an earlier attempt's selection, including when no branch now matches.
+      form.find("input[name='cf7msm_options']").remove();
 			var cf7msm_option = cf7msmGetVisibleMultistepTagFields(form);
 			if ( cf7msm_option.length == 0) {
 				return;
@@ -556,8 +574,12 @@ import '../scss/cf7msm.scss';
 		function getPossibleFreeTextVal(posted_data, key, _val) {
             var val = _val;
 			// radio button is an array when using cookie.
-			if (_val.constructor === Array) {
+			if (Array.isArray(_val)) {
 				val = _val[_val.length - 1];
+			}
+			// Unchecked optional fields can be saved as empty arrays in the cookie.
+			if (typeof val !== 'string') {
+				return null;
 			}
 			var ret = null;
 			var ref_name = '_cf7msm_free_text_reflen_' + key;
