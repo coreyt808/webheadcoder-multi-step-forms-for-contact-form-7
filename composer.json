@@ -4,6 +4,6 @@
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "require": {
-        "freemius/wordpress-sdk": "^2.13.4"
+        "freemius/wordpress-sdk": "^2.13.5"
     }
 }
