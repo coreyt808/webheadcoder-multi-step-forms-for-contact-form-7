@@ -320,7 +320,13 @@ import '../scss/cf7msm.scss';
 		function cf7msmIsHoneypotFieldName(name, honeypotFieldNames) {
 			return !!(honeypotFieldNames && Object.prototype.hasOwnProperty.call(honeypotFieldNames, name));
 		}
+
+		function cf7msmIsFileValue(value) {
+			return typeof File !== 'undefined' && value instanceof File;
+		}
+
 		
+
 		if ( cf7msm_hasSS() ) {
 			cf7msm_ss = cf7msm_getStorageObject( sessionStorage, 'cf7msm' );
 			/*
@@ -407,7 +413,12 @@ import '../scss/cf7msm.scss';
 						var field = cf7msm_form.find('*[name="' + key + '"]:not([data-cf7msm-previous])');
 						var checkbox_field = cf7msm_form.find('input[name="' + key + '[]"]:not([data-cf7msm-previous])'); //value is this or this or tihs
 						var multiselect_field = cf7msm_form.find('select[name="' + key + '[]"]:not([data-cf7msm-previous])');
-						if (field.length > 0) {
+						var file_field = field.filter('input[type="file"]');
+						if (file_field.length > 0) {
+							// Browsers cannot set a file input's value, and trying throws.
+							
+						}
+						else if (field.length > 0) {
 							if ( field.prop('type') == 'radio' || field.prop('type') == 'checkbox' ) {
 								// check free text fields
 								var new_vals = getPossibleFreeTextVal(posted_data, key, val);
@@ -601,6 +612,8 @@ import '../scss/cf7msm.scss';
 			cf7msm();
 		} );
 
+		
+
 		document.addEventListener( 'wpcf7mailsent', function( e ) {
 			var form = $('#' + e.detail.unitTag + ' form');
 			if ( cf7msm_hasSS() ) {
@@ -627,6 +640,10 @@ import '../scss/cf7msm.scss';
 					var name = e.detail.inputs[i].name;
 					var value = e.detail.inputs[i].value;
 					if ( cf7msmIsHoneypotFieldName(name, honeypotFieldNames) ) {
+						return true;
+					}
+					// A File object cannot be stored. Pro stores the retained file name from the response instead.
+					if ( cf7msmIsFileValue(value) ) {
 						return true;
 					}
 

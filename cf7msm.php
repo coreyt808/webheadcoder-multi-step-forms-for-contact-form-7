@@ -989,6 +989,22 @@ function cf7msm_current_pipe_flow_id(  $flow_id = null  ) {
 }
 
 /**
+ * Return whether a flow id belongs to an existing server-side flow.
+ *
+ * The flow id is shared by pipes and retained uploads, so a flow exists when
+ * it has a pipe store or an unexpired file manifest.
+ */
+function cf7msm_flow_exists(  $flow_id  ) {
+    if ( !cf7msm_is_valid_pipe_flow_id( $flow_id ) ) {
+        return false;
+    }
+    if ( false !== get_transient( 'cf7msm_pipe_store_' . $flow_id ) ) {
+        return true;
+    }
+    return function_exists( 'cf7msm_uploads_flow_exists' ) && cf7msm_uploads_flow_exists( $flow_id );
+}
+
+/**
  * Get the current flow id (create one when requested).
  */
 function cf7msm_get_pipe_flow_id(  $create = false  ) {
@@ -997,15 +1013,15 @@ function cf7msm_get_pipe_flow_id(  $create = false  ) {
         return $flow_id;
     }
     $flow_id = cf7msm_get( 'cf7msm_pipe_flow_id', '' );
-    if ( cf7msm_is_valid_pipe_flow_id( $flow_id ) && false !== get_transient( 'cf7msm_pipe_store_' . $flow_id ) ) {
+    if ( is_string( $flow_id ) && cf7msm_flow_exists( $flow_id ) ) {
         cf7msm_current_pipe_flow_id( $flow_id );
         return $flow_id;
     }
     // Only accept a client-carried id for an existing server-side flow. This
     // preserves cookie-less continuation without allowing arbitrary ids to
-    // create new transient rows.
+    // create new server-side state.
     $posted_flow_id = cf7msm_get_pipe_flow_id_from_posted_data();
-    if ( !empty( $posted_flow_id ) && false !== get_transient( 'cf7msm_pipe_store_' . $posted_flow_id ) ) {
+    if ( !empty( $posted_flow_id ) && cf7msm_flow_exists( $posted_flow_id ) ) {
         cf7msm_current_pipe_flow_id( $posted_flow_id );
         return $posted_flow_id;
     }
@@ -1158,7 +1174,7 @@ function cf7msm_map_pipe_value_for_mail(  $field_name, $submitted, $pipe_store  
 function cf7msm_format_mail_tag_value(  $value, $html  ) {
     // Match Contact Form 7's default mail formatting. wp_get_list_item_separator()
     // is locale-aware but only exists in WordPress 6.0+, so it stays guarded to
-    // preserve the plugin's minimum supported WordPress version (4.7).
+    // preserve the plugin's minimum supported WordPress version (5.9).
     $separator = ', ';
     if ( 'body' === WPCF7_Mail::get_current_component_name() ) {
         if ( function_exists( 'wp_get_list_item_separator' ) ) {
@@ -1456,11 +1472,10 @@ function cf7msm_store_data_steps() {
             $is_first_step = !empty( $matches[1] ) && intval( $matches[1] ) === 1;
         }
     }
-    if ( $is_first_step ) {
-        $flow_id = cf7msm_reset_pipe_flow_id();
-    } else {
-        $flow_id = cf7msm_get_pipe_flow_id( true );
-    }
+    // A resubmitted first step keeps the existing flow, including its pipe map
+    // and retained files. A new flow starts only when no valid flow exists;
+    // completing the last step deletes the flow.
+    $flow_id = cf7msm_get_pipe_flow_id( true );
     if ( !empty( $flow_id ) ) {
         $cf7_posted_data[cf7msm_pipe_flow_field_name()] = $flow_id;
     }
@@ -1474,6 +1489,9 @@ function cf7msm_store_data_steps() {
         foreach ( $free_texts_lengths as $key => $len ) {
             $cf7_posted_data[$key] = intval( $len );
         }
+        // CF7 stores a SHA-256 hash of each uploaded file in the posted data.
+        // It is meaningless on later steps and wastes cookie space.
+        $cf7_posted_data = cf7msm_remove_file_fields_from_posted_data( $cf7_posted_data );
         if ( !$is_last_step ) {
             // don't track big cookies on last step bc submitting on the last step doesn't use the cookie.
             cf7msm_track_big_cookie( $cf7_posted_data );
@@ -1483,6 +1501,23 @@ function cf7msm_store_data_steps() {
 }
 
 add_action( 'wpcf7_before_send_mail', 'cf7msm_store_data_steps' );
+/**
+ * Remove the current form's file-upload fields from data saved between steps.
+ */
+function cf7msm_remove_file_fields_from_posted_data(  $posted_data  ) {
+    if ( !is_array( $posted_data ) || !function_exists( 'wpcf7_scan_form_tags' ) ) {
+        return $posted_data;
+    }
+    foreach ( (array) wpcf7_scan_form_tags( array(
+        'feature' => 'file-uploading',
+    ) ) as $tag ) {
+        if ( !empty( $tag->name ) ) {
+            unset($posted_data[$tag->name]);
+        }
+    }
+    return $posted_data;
+}
+
 /**
  * Skip sending the mail if this is a multi step form and not the last step.
  */
@@ -1547,6 +1582,7 @@ function cf7msm_set_step(  $result, $tags  ) {
             }
             if ( $result->is_valid() ) {
                 if ( $curr_step != $last_step ) {
+                    cf7msm_legacy_step_snapshot( $stored_step );
                     cf7msm_set( 'cf7msm-step', $curr_step );
                 }
             } else {
@@ -1567,6 +1603,41 @@ add_filter(
     99,
     2
 );
+/**
+ * Remember the legacy step value from before this request changed it.
+ *
+ * @param mixed $value The previous value to remember. Omit to read it.
+ * @return array { has_snapshot: bool, value: mixed }
+ */
+function cf7msm_legacy_step_snapshot(  $value = null  ) {
+    static $snapshot = array(
+        'has_snapshot' => false,
+        'value'        => '',
+    );
+    if ( func_num_args() > 0 && !$snapshot['has_snapshot'] ) {
+        $snapshot = array(
+            'has_snapshot' => true,
+            'value'        => $value,
+        );
+    }
+    return $snapshot;
+}
+
+/**
+ * Restore the legacy step value when a step is aborted after validation.
+ *
+ * cf7msm_set_step() advances the legacy step during validation, before the
+ * submission can still be aborted, for example when retaining uploads fails.
+ */
+function cf7msm_rollback_legacy_step() {
+    $snapshot = cf7msm_legacy_step_snapshot();
+    if ( !$snapshot['has_snapshot'] ) {
+        return;
+    }
+    $value = $snapshot['value'];
+    cf7msm_set( 'cf7msm-step', ( is_scalar( $value ) ? (string) $value : '' ) );
+}
+
 /**
  * Clean things up after mail has been sent.
  */
@@ -1615,6 +1686,9 @@ function cf7msm_mail_sent() {
         update_option( '_cf7msm_stats', $stats );
         $flow_id = cf7msm_get_pipe_flow_id();
         cf7msm_delete_pipe_store( $flow_id );
+        if ( !empty( $flow_id ) && function_exists( 'cf7msm_uploads_delete_flow' ) ) {
+            cf7msm_uploads_delete_flow( $flow_id );
+        }
         cf7msm_remove( 'cf7msm-step' );
         cf7msm_remove( 'cf7msm_posted_data' );
         cf7msm_remove( 'cf7msm_pipe_flow_id' );

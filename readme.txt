@@ -1,10 +1,10 @@
 === Webheadcoder Multi-Step Forms for Contact Form 7 ===
 Contributors: webheadllc, freemius
 Tags: contact form 7, multistep form, multi page form, form persistence
-Requires at least: 4.7
+Requires at least: 5.9
 Requires PHP: 7.3
 Tested up to: 7.1
-Stable tag: 4.7.1
+Stable tag: 4.8
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,7 +16,7 @@ First released in 2013, Webheadcoder Multi-Step Forms for Contact Form 7 adds mu
 
 See it in action at [https://webheadcoder.com/contact-form-7-multi-step-forms/](https://webheadcoder.com/contact-form-7-multi-step-forms/)
 
-Requires [Contact Form 7](https://wordpress.org/plugins/contact-form-7/) (5.2 or above) by Rock Lobster Inc. (Takayuki Miyoshi).
+Requires [Contact Form 7](https://wordpress.org/plugins/contact-form-7/) (5.6 or above) by Rock Lobster Inc. (Takayuki Miyoshi).
 
 **Usage**
 
@@ -72,7 +72,7 @@ When a visitor visits the fourth step in your multi-step form without completing
 
 **What this plugin DOES NOT do:**  
 
-* This plugin does not support file uploads on every form.  If you need to use file uploads make sure to place it on the last step.
+* The free version supports file uploads on the last step only.  If you need file uploads, place them on the last step.  The Pro version supports file uploads on any step.
 
 * This plugin does not load another form on the same page.  It only works when the forms are on separate pages.  Many have asked to make it load via ajax so all forms can reside on one page.  This plugin does not support that.
 
@@ -80,6 +80,8 @@ When a visitor visits the fourth step in your multi-step form without completing
 If you expect to have a lot of data submitted through your multi-step forms, the Pro version may be able to help you better.  The PRO version uses Session Storage so it is able to handle roughly 1,000 times more data for your multiple forms.  In total it can handle about 5MB vs 4KB in the free version.  **Currently the Pro version REQUIRES the WordPress REST API and Contact Form 7 AJAX Submission to be enabled.**   
 
 Another feature the Pro version offers is the ability to skip steps with the "Contact Form 7 - Conditional Fields plugin".  [Learn more here.](https://webheadcoder.com/contact-form-7-multi-step-forms/#pro)
+
+The Pro version also lets visitors upload files on any step and attaches them to an email sent by that step or a later one.  See "Can visitors upload files on any step?" below.
 
 == Source Code ==
 
@@ -152,6 +154,26 @@ To avoid this, insert `multistep` at the end of the form or add a line break aft
 Use the "Skip Save" option, or add `skip_save` in your multistep tag:
 `[multistep multistep-123 skip_save "/your-next-url/"]`
 
+= Can visitors upload files on any step? =
+In the free version, use Contact Form 7's normal `[file]` and `[file*]` on the last step only.
+
+In the Pro version, use Contact Form 7's normal `[file]` and `[file*]` fields on any step.  Files upload when the visitor submits that step.  To attach a file from an earlier step, add its mail-tag to the File attachments setting on the Mail tab of the form that sends the email, as you would for a file on the same form.  For example, a file uploaded as `[file file-123]` on step 1 is attached by a later form whose File attachments contain `[file-123]`.  The file name is available as `[file-123]` in the email body and `[multiform file-123]` on the Form tab.
+
+How it works and its limits:
+
+* Files are kept on the server in `wp-content/uploads/cf7msm_uploads/` until the visitor completes the last step, and are deleted after 6 hours without a successful step.  Change this with the `cf7msm_upload_ttl` filter (in seconds).
+* The files retained for one visitor can total 25 MB, the same as Contact Form 7's per-email limit.  Change this with the `cf7msm_upload_max_flow_bytes` filter.  An email cannot attach more than 25 MB, so the step is stopped with a message instead of sending without some files.
+* When a visitor goes back to a step, the earlier file is shown as "Already uploaded" with Replace and Remove buttons.  Uploading a field with the same name on a later step replaces the earlier file.
+* If an earlier file has expired, the step that sends the email asks the visitor to go back and upload it again instead of sending the email without it.
+* Flamingo, CFDB7 and Advanced CF7 DB only save the files uploaded on the step being submitted.  The `skip_save` option does not affect file uploads.
+* All steps must be served by the same web server, or by servers that share the uploads directory.  Load-balanced or ephemeral-disk hosting where a later step can reach a server without the files is not supported.
+* Contact Form 7's configuration validator only checks file fields on the current form, so it does not warn about the size of files from earlier steps.
+* The upload directory must be inside `wp-content`, the WordPress uploads directory or `WP_TEMP_DIR`.  A different location can be set with the `cf7msm_upload_dir` filter.
+
+The directory is protected by an `.htaccess` file on Apache.  Nginx ignores `.htaccess`, so add a rule like this to your server block:
+
+`location ~* /wp-content/uploads/cf7msm_uploads/ { deny all; }`
+
 = When checkbox fields are left unchecked they appear as [field-name] in the email.  How do I resolve this? =
 Unchecked checkboxes are not submitted, so the final step may not know that field exists.
 
@@ -161,6 +183,11 @@ Add a hidden field with the same name on the last step, for example:
 This ensures the final step submits either the saved value or a blank value.
 
 == Changelog ==
+
+= 4.8 - November 2026 =
+* PRO: added file uploads on any step.  
+* updated compatibility with Contact Form 7 6.2.  
+* fixed JavaScript constructor errors and crashes when saved form data is empty.  
 
 = 4.7.1 - October 2026 =
 * security fix: patched a cross-site scripting (XSS) vulnerability in how form data is carried between steps.  
