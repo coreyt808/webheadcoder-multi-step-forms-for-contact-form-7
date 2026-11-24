@@ -17,3 +17,17 @@
 .cf7msm-retained-file-name {
     font-weight: bold;
 }
+
+// Keep the warning visible outside a blocked step's form.
+.wpcf7 form.cf7msm-blocked {
+  display: none !important;
+}
+
+// Shown before a blocked form, or above the first step's fields.
+.cf7msm-warning {
+    margin: 0 0 1em;
+    padding: 0.5em 1em;
+    border: 2px solid #ffb900;
+    background: #fff8e5;
+    color: #1d2327;
+}

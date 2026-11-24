@@ -3,6 +3,15 @@ import '../scss/cf7msm.scss';
 (function( $ ) {
 	var cf7msm_ss;
 	var cf7msm_did_load = false;
+	var cf7msm_cleanup = [];
+
+	// Reinitialization needs fresh storage and form state, with one set of handlers.
+	function cf7msmListen(target, name, handler) {
+		target.addEventListener(name, handler, false);
+		cf7msm_cleanup.push(function() {
+			target.removeEventListener(name, handler, false);
+		});
+	}
 	/**
 	 * Given 2 arrays, return a unique array
 	 * https://codegolf.stackexchange.com/questions/17127/array-merge-without-duplicates
@@ -36,7 +45,90 @@ import '../scss/cf7msm.scss';
 	 
 	 function cf7msm_getStorageObject(storage, key) {
 		 var value = storage.getItem(key);
-		 return value && JSON.parse(value);
+		 if ( !value ) {
+			 return null;
+		 }
+		 try {
+			 return JSON.parse(value);
+		 }
+		 catch (e) {
+			 // Invalid JSON (written by another script or edited by hand) is
+			 // treated as empty; the next successful step overwrites it.
+			 return null;
+		 }
+	 }
+
+	 // Drop a URL's #fragment.
+	 function cf7msmStripFragment(url) {
+		 url = '' + url;
+		 var hash = url.indexOf('#');
+		 return hash === -1 ? url : url.substring(0, hash);
+	 }
+
+	 // The URL with and without a trailing slash on its path.
+	 function cf7msmSlashVariants(url) {
+		 var query = url.indexOf('?');
+		 var path = query === -1 ? url : url.substring(0, query);
+		 var rest = query === -1 ? '' : url.substring(query);
+		 var bare = path.replace(/\/$/, '');
+		 return [path + rest, bare + rest, bare + '/' + rest];
+	 }
+
+	 /**
+	  * Find the page that led to `url` in cf7msm_prev_urls, or null.
+	  *
+	  * Fragments are ignored on both sides. Tries the URL as is, then without
+	  * its query string, each with and without a trailing slash.
+	  */
+	 function cf7msmFindPrevUrl(prevUrls, url) {
+		 if ( !prevUrls || typeof prevUrls !== 'object' ) {
+			 return null;
+		 }
+		 var normalized = {};
+		 for (var key in prevUrls) {
+			 if ( !Object.prototype.hasOwnProperty.call(prevUrls, key) ) {
+				 continue;
+			 }
+			 var value = prevUrls[key];
+			 if ( typeof value !== 'string' || value === '' ) {
+				 continue;
+			 }
+			 // Older scripts stored unencoded paths; compare browser URL forms.
+			 var normalized_key = cf7msmGetNextUrl(key);
+			 var stripped = cf7msmStripFragment(normalized_key);
+			 // A key without a fragment wins over one that had it.
+			 if ( stripped === normalized_key || !Object.prototype.hasOwnProperty.call(normalized, stripped) ) {
+				 normalized[stripped] = value;
+			 }
+		 }
+		 url = cf7msmStripFragment(cf7msmGetNextUrl(url));
+		 var candidates = cf7msmSlashVariants(url).concat(cf7msmSlashVariants(url.split('?')[0]));
+		 for (var i = 0; i < candidates.length; i++) {
+			 if ( Object.prototype.hasOwnProperty.call(normalized, candidates[i]) ) {
+				 return normalized[candidates[i]];
+			 }
+		 }
+		 return null;
+	 }
+
+	 // Make a configured next URL absolute, as it is stored in cf7msm_prev_urls.
+	 function cf7msmGetNextUrl(nextUrl) {
+		 if ( !nextUrl ) {
+			 return null;
+		 }
+		 var parser = document.createElement('a');
+		 parser.href = nextUrl;
+		 var nextUrlHostName = parser.hostname + (parser.port ? ':' + parser.port : '');
+		 var startOfUrl = window.location.protocol + "//" + window.location.host;
+		 if ( nextUrl.indexOf( startOfUrl ) !== 0 && (nextUrlHostName == '' || nextUrlHostName == window.location.host)) {
+			 if (nextUrl.indexOf('/') !== 0 ) {
+				 startOfUrl += '/';
+			 }
+			 nextUrl = startOfUrl + nextUrl;
+		 }
+		 // Match location.href's encoding while retaining root-relative handling.
+		 parser.href = nextUrl;
+		 return parser.href;
 	 }
 	 
 	 /**
@@ -92,6 +184,8 @@ import '../scss/cf7msm.scss';
 			return;
 		}
 		cf7msm_did_load = true;
+		cf7msm_cleanup.forEach(function(cleanup) { cleanup(); });
+		cf7msm_cleanup = [];
 		var pipe_flow_field_name = 'wpcf7msm_pipe_flow_id';
 		var posted_data = cf7msm_posted_data;
 		var cf7msm_field = $("input[name='_cf7msm_multistep_tag']");
@@ -107,6 +201,14 @@ import '../scss/cf7msm.scss';
 		}
 		var cf7msm_form = cf7msm_field.closest('form');
 		var form_id = cf7msm_form.find('input[name="_wpcf7"]').val();
+		var has_ss = cf7msm_hasSS();
+
+		// Undo what an earlier init did to this page (bfcache restore). This runs
+		// before storage is read, because population is skipped when storage is
+		// empty or blocked.
+		
+		// Firefox and bfcache can restore an old value, so set it every time.
+		$("input[name='cf7msm-no-ss']").val(has_ss ? '' : 1);
 
 		function cf7msmGetFreeTextInput(form, fieldName) {
 			var baseName = fieldName;
@@ -327,73 +429,38 @@ import '../scss/cf7msm.scss';
 
 		
 
-		if ( cf7msm_hasSS() ) {
+		
+
+		if ( has_ss ) {
 			cf7msm_ss = cf7msm_getStorageObject( sessionStorage, 'cf7msm' );
-			/*
+			
 			//multi step forms
-			if (cf7msm_ss != null && step_field.length > 0) {
-				var cf7_form = $(step_field[0].form);
-				$.each(cf7msm_ss, function(key, val){
-					if (key == 'cf7msm_prev_urls') {
-						cf7_form.find('.wpcf7-back, .wpcf7-previous').click(function(e) {
-							window.location.href = val[step_field.val()];
-							e.preventDefault();
-						});
-					}
-				});
-			}
-			*/
-			//multi step forms
-			if (cf7msm_ss != null) {
-				$.each(cf7msm_ss, function(key, val){
-					if (key == 'cf7msm_prev_urls') {
-						var backButton = cf7msm_form.find('.wpcf7-back, .wpcf7-previous');
-						var url = window.location.href;
-						var url_no_slash = url.replace(/\/$/, ""); // w/o trailing slash
-						var maybeHideButton = (!val.hasOwnProperty(url) || val[url] == '' );
-						if (maybeHideButton) {
-							// also check w/o trailing slash since it's sometimes added in the url.
-							maybeHideButton = (!val.hasOwnProperty(url_no_slash) || val[url_no_slash] == '' )
-						}
-						// try again without the querystring
-						if (maybeHideButton) {
-							url = url.split('?')[0];
-							url_no_slash = url.replace(/\/$/, ""); // w/o trailing slash
-							maybeHideButton = (!val.hasOwnProperty(url) || val[url] == '' );
-							if (maybeHideButton) {
-								// also check w/o trailing slash since it's sometimes added in the url.
-								maybeHideButton = (!val.hasOwnProperty(url_no_slash) || val[url_no_slash] == '' )
-							}
-						}
-						if (maybeHideButton) {
-							backButton.hide();
-						}
-						else {
-							backButton.click(function(e) {
-								if (val.hasOwnProperty(url) && val[url] != '') {
-									window.location.href = val[url];
-								}
-								else if (val.hasOwnProperty(url_no_slash) && val[url_no_slash] != '') {
-									window.location.href = val[url_no_slash];
-								}
-								else {
-									window.history.go(-1);
-								}
-								e.preventDefault();
-							});						
-						}
-					}
-				});
+			if ( cf7msm_ss && typeof cf7msm_ss === 'object' && cf7msm_ss.hasOwnProperty('cf7msm_prev_urls') ) {
+				var backButton = cf7msm_form.find('.wpcf7-back, .wpcf7-previous');
+				var prevUrl = cf7msmFindPrevUrl(cf7msm_ss.cf7msm_prev_urls, window.location.href);
+				if ( prevUrl === null ) {
+					backButton.hide();
+				}
+				else {
+					backButton.off('click.cf7msm').on('click.cf7msm', function(e) {
+						window.location.href = prevUrl;
+						e.preventDefault();
+					});
+				}
 			}
 
 			
 		}
 		else {
-			$("input[name='cf7msm-no-ss']").val(1);
+			cf7msm_ss = null;
+			
 			$(".wpcf7-previous").hide();
 		}
 
-		function cf7msm() {
+		
+
+		
+		function cf7msm(preserve_current_values) {
 			
 			if (posted_data) {
 				var honeypotFieldNames = cf7msmGetHoneypotFieldNames(cf7msm_form);
@@ -414,6 +481,7 @@ import '../scss/cf7msm.scss';
 						var checkbox_field = cf7msm_form.find('input[name="' + key + '[]"]:not([data-cf7msm-previous])'); //value is this or this or tihs
 						var multiselect_field = cf7msm_form.find('select[name="' + key + '[]"]:not([data-cf7msm-previous])');
 						var file_field = field.filter('input[type="file"]');
+						
 						if (file_field.length > 0) {
 							// Browsers cannot set a file input's value, and trying throws.
 							
@@ -493,6 +561,7 @@ import '../scss/cf7msm.scss';
 
         cf7msmRefreshConditionalFields(cf7msm_form);
 			}
+			
 		}
 
     function cf7msmRefreshConditionalFields(form) {
@@ -509,14 +578,21 @@ import '../scss/cf7msm.scss';
     }
 
 		var savedSubmit = wpcf7.submit;
-		wpcf7.submit = function( form, arg2 ) {
+		var submitWrapper = function( form, arg2 ) {
 			cf7msmBeforeSubmit( form, arg2 );
 			return savedSubmit( form, arg2 );
 		};
+		wpcf7.submit = submitWrapper;
+		cf7msm_cleanup.push(function() {
+			if ( wpcf7.submit === submitWrapper ) {
+				wpcf7.submit = savedSubmit;
+			}
+		});
 
 		function cf7msmBeforeSubmit( form ) {
 			
 			cf7msmSetOptions( form );
+			
 			cf7msmSetPipeFlow( form );
 			cf7msmSetFreeText( form );
 		}
@@ -608,186 +684,180 @@ import '../scss/cf7msm.scss';
 
 		
 
-		window.addEventListener( 'load', function() {
+		cf7msmListen( window, 'load', function() {
 			cf7msm();
 		} );
 
 		
 
-		document.addEventListener( 'wpcf7mailsent', function( e ) {
+		cf7msmListen( document, 'wpcf7mailsent', function( e ) {
 			var form = $('#' + e.detail.unitTag + ' form');
-			if ( cf7msm_hasSS() ) {
-				var currStep = 0;
-				var totalSteps = 0;
-				var names = [];
-				var currentInputs = {};
+			// Move on with or without storage; only the storage writes need it.
+			var has_storage = cf7msm_hasSS();
+			var currStep = 0;
+			var totalSteps = 0;
+			var names = [];
+			var currentInputs = {};
+			var isCF7MSM = false;
+			var hasMultistepOptions = false;
+			var show_success = true;
+			var hide_form = false;
+			var nextUrl = null;
+			var last_step = false;
+			
+			var free_text_els = $('.has-free-text', form);
+			var checkbox_free_text_map = {}; // Track which checkbox fields have free text
+			var honeypotFieldNames = cf7msmGetHoneypotFieldNames(form);
+
+			$.each(e.detail.inputs, function(i){
+				var name = e.detail.inputs[i].name;
+				var value = e.detail.inputs[i].value;
+				if ( cf7msmIsHoneypotFieldName(name, honeypotFieldNames) ) {
+					return true;
+				}
+				// A File object cannot be stored. Pro stores the retained file name from the response instead.
+				if ( cf7msmIsFileValue(value) ) {
+					return true;
+				}
+
+				// CF7 v5.x Does not return free text inputs! or cf7msm inputs
+				// alter value if it has free text
+				// update reflen field
+				var free_text_input_el = $('input[name="' + name +'"]', free_text_els);
+				if (free_text_input_el.length > 0) {
+					if (free_text_input_el.is(':checked')) {
+						var base_name = name;
+						if ( name.indexOf('[]') === name.length - 2 ) {
+							base_name = name.substring(0, name.length - 2);
+						}
+						var ref_len = value.length;
+						var free_text_value = cf7msmGetFreeTextInput(free_text_els, base_name).val();
+						var ref_name = '_cf7msm_free_text_reflen_' + base_name;
+
+						// Store free text info for checkboxes to append later
+						if ( name.indexOf('[]') === name.length - 2 ) {
+							checkbox_free_text_map[name] = {
+								value: value,
+								free_text: free_text_value,
+								ref_len: ref_len,
+								ref_name: ref_name
+							};
+						}
+						else {
+							// For radio buttons, append immediately
+							value += ' ' + free_text_value;
+							currentInputs[ref_name] = ref_len;
+						}
+					}
+				}
+
+				//make it compatible with cookie version
+				if ( name.indexOf('[]') === name.length - 2 ) {
+					if ( $.inArray(name, names) === -1 ) {
+						currentInputs[name] = [];
+					}
+					currentInputs[name].push(value);
+				}
+				else {
+					currentInputs[name] = value;
+				}
+				
+				//figure out prev url
+				if ( name === 'cf7msm-step' ) {
+					if ( value.indexOf("-") !== -1 ) {
+						isCF7MSM = true;
+						hasMultistepOptions = false;
+
+						var stepParts = value.split('-');
+						currStep = parseInt( stepParts[0] );
+						totalSteps = parseInt( stepParts[1] );
+						// Not printed when the form renders before scripts are
+						// registered (block themes).
+						if ( typeof cf7msm_redirect_urls !== 'undefined' && typeof cf7msm_redirect_urls[form_id] !== 'undefined' ) {
+							nextUrl = cf7msm_redirect_urls[form_id];
+						}
+						if ( currStep < totalSteps ) {
+							show_success = false;
+						}
+						else if ( currStep === totalSteps ) {
+							hide_form = true;
+						}
+					}
+				}
+				else if (name === 'cf7msm_options' ) {
+					isCF7MSM = true;
+					hasMultistepOptions = true;
+					show_success = false;
+					var options = JSON.parse( value );
+					if (options.hasOwnProperty( 'next_url' ) ) {
+						nextUrl = options.next_url;
+					}
+					if (options.hasOwnProperty( 'last_step' ) ) {
+						last_step = true;
+						if (!nextUrl || nextUrl === '') {
+							hide_form = true;
+							show_success = true;
+						}
+					}
+				}
+				else {
+					names.push(name);
+				}
+			});
+
+			// Now append free text to the last checkbox value only
+			$.each(checkbox_free_text_map, function(name, info) {
+				if (currentInputs.hasOwnProperty(name) && currentInputs[name].length > 0) {
+					var last_index = currentInputs[name].length - 1;
+					// Only append if the last value matches the one with free text
+					if (currentInputs[name][last_index] === info.value) {
+						currentInputs[name][last_index] += ' ' + info.free_text;
+						currentInputs[info.ref_name] = info.ref_len;
+					}
+				}
+			});
+
+			if (!isCF7MSM) {
+				return;
+			}
+			if (!show_success) {
+				// hide the success messages
+				// for cf7 5.2.1
+				var msg = $('#' + e.detail.unitTag).find('div.wpcf7-mail-sent-ok');
+				if (msg.length == 0) {
+					msg = $('#' + e.detail.unitTag).find('.wpcf7-response-output')
+				}
+				msg.remove();
+				
+			}
+
+			if (hide_form) {
+				// hide the form
+				form.find('*').not('div.wpcf7-response-output').hide();
+				form.find('div.wpcf7-response-output').parentsUntil('form').show();						            	
+			}
+
+			nextUrl = cf7msmGetNextUrl(nextUrl);
+			var is_final_step = hasMultistepOptions ? last_step : ( currStep != 0 && currStep === totalSteps );
+
+			if ( has_storage ) {
 				cf7msm_ss = cf7msm_getStorageObject(sessionStorage, 'cf7msm');
 				if ( !cf7msm_ss ) {
 					cf7msm_ss = {};
 				}
-				var isCF7MSM = false;
-				var hasMultistepOptions = false;
-				var show_success = true;
-				var hide_form = false;
-				var nextUrl = null;
-				var last_step = false;
-				
-				var free_text_els = $('.has-free-text', form);
-				var checkbox_free_text_map = {}; // Track which checkbox fields have free text
-				var honeypotFieldNames = cf7msmGetHoneypotFieldNames(form);
-
-				$.each(e.detail.inputs, function(i){
-					var name = e.detail.inputs[i].name;
-					var value = e.detail.inputs[i].value;
-					if ( cf7msmIsHoneypotFieldName(name, honeypotFieldNames) ) {
-						return true;
-					}
-					// A File object cannot be stored. Pro stores the retained file name from the response instead.
-					if ( cf7msmIsFileValue(value) ) {
-						return true;
-					}
-
-					// CF7 v5.x Does not return free text inputs! or cf7msm inputs
-					// alter value if it has free text
-					// update reflen field
-					var free_text_input_el = $('input[name="' + name +'"]', free_text_els);
-					if (free_text_input_el.length > 0) {
-						if (free_text_input_el.is(':checked')) {
-							var base_name = name;
-							if ( name.indexOf('[]') === name.length - 2 ) {
-								base_name = name.substring(0, name.length - 2);
-							}
-							var ref_len = value.length;
-							var free_text_value = cf7msmGetFreeTextInput(free_text_els, base_name).val();
-							var ref_name = '_cf7msm_free_text_reflen_' + base_name;
-
-							// Store free text info for checkboxes to append later
-							if ( name.indexOf('[]') === name.length - 2 ) {
-								checkbox_free_text_map[name] = {
-									value: value,
-									free_text: free_text_value,
-									ref_len: ref_len,
-									ref_name: ref_name
-								};
-							}
-							else {
-								// For radio buttons, append immediately
-								value += ' ' + free_text_value;
-								currentInputs[ref_name] = ref_len;
-							}
-						}
-					}
-
-					//make it compatible with cookie version
-					if ( name.indexOf('[]') === name.length - 2 ) {
-						if ( $.inArray(name, names) === -1 ) {
-							currentInputs[name] = [];
-						}
-						currentInputs[name].push(value);
-					}
-					else {
-						currentInputs[name] = value;
-					}
-					
-					//figure out prev url
-					if ( name === 'cf7msm-step' ) {
-						if ( value.indexOf("-") !== -1 ) {
-							isCF7MSM = true;
-							hasMultistepOptions = false;
-
-							var stepParts = value.split('-');
-							currStep = parseInt( stepParts[0] );
-							totalSteps = parseInt( stepParts[1] );
-							if ( typeof cf7msm_redirect_urls[form_id] !== 'undefined' ) {
-								nextUrl = cf7msm_redirect_urls[form_id];
-							}
-							if ( currStep < totalSteps ) {
-								show_success = false;
-							}
-							else if ( currStep === totalSteps ) {
-								hide_form = true;
-							}
-						}
-					}
-					else if (name === 'cf7msm_options' ) {
-						isCF7MSM = true;
-						hasMultistepOptions = true;
-						show_success = false;
-						var options = JSON.parse( value );
-						if (options.hasOwnProperty( 'next_url' ) ) {
-							nextUrl = options.next_url;
-						}
-						if (options.hasOwnProperty( 'last_step' ) ) {
-							last_step = true;
-							if (!nextUrl || nextUrl === '') {
-								hide_form = true;
-								show_success = true;
-							}
-						}
-					}
-					else {
-						names.push(name);
-					}
-				});
-
-				// Now append free text to the last checkbox value only
-				$.each(checkbox_free_text_map, function(name, info) {
-					if (currentInputs.hasOwnProperty(name) && currentInputs[name].length > 0) {
-						var last_index = currentInputs[name].length - 1;
-						// Only append if the last value matches the one with free text
-						if (currentInputs[name][last_index] === info.value) {
-							currentInputs[name][last_index] += ' ' + info.free_text;
-							currentInputs[info.ref_name] = info.ref_len;
-						}
-					}
-				});
-
-				if (!isCF7MSM) {
-					return;
-				}
-				if (!show_success) {
-					// hide the success messages
-					// for cf7 5.2.1
-					var msg = $('#' + e.detail.unitTag).find('div.wpcf7-mail-sent-ok');
-					if (msg.length == 0) {
-						msg = $('#' + e.detail.unitTag).find('.wpcf7-response-output')
-					}
-					msg.remove();
-					
-				}
-
-				if (hide_form) {
-					// hide the form
-					form.find('*').not('div.wpcf7-response-output').hide();
-					form.find('div.wpcf7-response-output').parentsUntil('form').show();						            	
-				}
 
 				
 
-				if ( !hasMultistepOptions ) {	    	
-					if ( currStep != 0 && currStep === totalSteps ) {
-						cf7msm_ss = {};
-					}	
-				}
-				else if ( last_step ) {
+				if ( is_final_step ) {
 					cf7msm_ss = {};
 				}
 
-				if (nextUrl && nextUrl != '') {
-					var parser = document.createElement('a');
-					parser.href = nextUrl;
-					var nextUrlHostName = parser.hostname + (parser.port ? ':' + parser.port : '');
+				
 
+				if ( nextUrl ) {
 					var steps_prev_urls = {};
-					if ( cf7msm_ss && cf7msm_ss.cf7msm_prev_urls ) {
+					if ( cf7msm_ss.cf7msm_prev_urls && typeof cf7msm_ss.cf7msm_prev_urls === 'object' ) {
 						steps_prev_urls = cf7msm_ss.cf7msm_prev_urls;
-					}
-					var startOfUrl = window.location.protocol + "//" + window.location.host;
-					if ( nextUrl.indexOf( startOfUrl ) !== 0 && (nextUrlHostName == '' || nextUrlHostName == window.location.host)) {
-						if (nextUrl.indexOf('/') !== 0 ) {
-							startOfUrl += '/';
-						}
-						nextUrl = startOfUrl + nextUrl;
 					}
 					steps_prev_urls[nextUrl] = window.location.href;
 					var without_query = nextUrl.split('?')[0];
@@ -797,20 +867,22 @@ import '../scss/cf7msm.scss';
 					cf7msm_ss.cf7msm_prev_urls = steps_prev_urls;
 				}
 
-				cf7msm_setStorageObject(sessionStorage, 'cf7msm', cf7msm_ss);
-
-				if (nextUrl && nextUrl != '') {
-					window.location.href = nextUrl;
-				}
-
 				
-				/*
-				if ( currStep != 0 && currStep === totalSteps ) {
-					cf7msm_ss = {};
-				}
+
 				cf7msm_setStorageObject(sessionStorage, 'cf7msm', cf7msm_ss);
-				*/
 			}
-		}, false );
+
+			if ( nextUrl ) {
+				window.location.href = nextUrl;
+			}
+
+			
+			/*
+			if ( currStep != 0 && currStep === totalSteps ) {
+				cf7msm_ss = {};
+			}
+			cf7msm_setStorageObject(sessionStorage, 'cf7msm', cf7msm_ss);
+			*/
+		} );
 	};
 })(jQuery);

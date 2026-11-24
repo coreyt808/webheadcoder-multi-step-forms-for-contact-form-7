@@ -90,7 +90,8 @@ function cf7msm_multistep_shortcode_handler( $tag ) {
         'type'               => 'hidden',
         'name'               => '_cf7msm_multistep_tag',
         'class'              => $tag->get_class_option( $class ),
-        'value'              => '' . json_encode( $options )
+        'value'              => '' . json_encode( $options ),
+        'data-cf7msm-missing-msg' => cf7msm_get_missing_previous_message(),
     );
     $atts = wpcf7_format_atts( $atts );
     $html = sprintf( '<input %1$s />', $atts );
@@ -119,7 +120,8 @@ function cf7msm_multistep_shortcode_handler_old( $tag ) {
         'type'               => 'hidden',
         'class'              => $tag->get_class_option( $class ),
         'value'              => $step_value,
-        'name'               => 'cf7msm-step'
+        'name'               => 'cf7msm-step',
+        'data-cf7msm-missing-msg' => cf7msm_get_missing_previous_message(),
     );
     $atts = wpcf7_format_atts( $atts );
     $html = sprintf( '<input %1$s />', $atts );
@@ -130,6 +132,18 @@ function cf7msm_multistep_shortcode_handler_old( $tag ) {
     ) ) );
 
     return $html;
+}
+
+/**
+ * The current form's "fill out the previous page" message, for the browser's
+ * early warning when this tab has no earlier-step answers.
+ */
+function cf7msm_get_missing_previous_message() {
+    $contact_form = class_exists( 'WPCF7_ContactForm' ) ? WPCF7_ContactForm::get_current() : null;
+    if ( !$contact_form ) {
+        return '';
+    }
+    return (string) $contact_form->message( 'invalid_first_step' );
 }
 
 /**

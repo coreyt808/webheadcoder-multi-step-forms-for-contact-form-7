@@ -237,6 +237,42 @@ function cf7msm_set(  $var_name, $var_value  ) {
  *  Get a variable from cookies or if not enabled, from session.
  */
 function cf7msm_get(  $var_name, $default = ''  ) {
+    if ( 'cf7msm_posted_data' === $var_name ) {
+        $ret = cf7msm_get_stored_posted_data();
+        // Conditional Fields plugin throws 500 error when these aren't set.
+        if ( class_exists( 'CF7CF' ) && method_exists( 'CF7CF', 'cf7msm_merge_post_with_cookie' ) ) {
+            if ( !isset( $ret['_wpcf7cf_hidden_group_fields'] ) ) {
+                $ret['_wpcf7cf_hidden_group_fields'] = '[]';
+            }
+            if ( !isset( $ret['_wpcf7cf_hidden_groups'] ) ) {
+                $ret['_wpcf7cf_hidden_groups'] = '[]';
+            }
+            if ( !isset( $ret['_wpcf7cf_visible_groups'] ) ) {
+                $ret['_wpcf7cf_visible_groups'] = '[]';
+            }
+        }
+        return $ret;
+    }
+    return cf7msm_get_raw( $var_name, $default );
+}
+
+/**
+ * Get the saved form data from this request's cookie or session value, without
+ * the defaults cf7msm_get() adds for Conditional Fields.
+ *
+ * @return array Empty when nothing is stored.
+ */
+function cf7msm_get_stored_posted_data() {
+    // Sanitize decoded cookie keys too, including cookies saved before this fix.
+    $ret = cf7msm_sanitize_posted_data( cf7msm_get_raw( 'cf7msm_posted_data', array() ) );
+    // An empty session returns the default; PHP 8 fatals when keys are added to a string.
+    return ( is_array( $ret ) ? $ret : array() );
+}
+
+/**
+ * Read a variable from the session or cookie as stored.
+ */
+function cf7msm_get_raw(  $var_name, $default = ''  ) {
     $ret = $default;
     if ( cf7msm_activate_php_session( false ) ) {
         // $_SESSION values are stored by cf7msm_set(), which already unslashes them,
@@ -249,26 +285,6 @@ function cf7msm_get(  $var_name, $default = ''  ) {
         $ret = ( isset( $_COOKIE[$var_name] ) ? cf7msm_sanitize_posted_data( wp_unslash( $_COOKIE[$var_name] ) ) : $default );
         if ( is_string( $ret ) ) {
             $ret = json_decode( $ret, true );
-        }
-    }
-    // Sanitize decoded cookie keys too, including cookies saved before this fix.
-    if ( 'cf7msm_posted_data' === $var_name ) {
-        $ret = cf7msm_sanitize_posted_data( $ret );
-        // An empty session returns the string default; PHP 8 fatals when keys are added to it.
-        if ( !is_array( $ret ) ) {
-            $ret = array();
-        }
-    }
-    // Conditional Fields plugin throws 500 error when these aren't set.
-    if ( $var_name == 'cf7msm_posted_data' && class_exists( 'CF7CF' ) && method_exists( 'CF7CF', 'cf7msm_merge_post_with_cookie' ) ) {
-        if ( !isset( $ret['_wpcf7cf_hidden_group_fields'] ) ) {
-            $ret['_wpcf7cf_hidden_group_fields'] = '[]';
-        }
-        if ( !isset( $ret['_wpcf7cf_hidden_groups'] ) ) {
-            $ret['_wpcf7cf_hidden_groups'] = '[]';
-        }
-        if ( !isset( $ret['_wpcf7cf_visible_groups'] ) ) {
-            $ret['_wpcf7cf_visible_groups'] = '[]';
         }
     }
     return $ret;
@@ -1459,17 +1475,15 @@ function cf7msm_store_data_steps() {
     $cf7_posted_data = WPCF7_Submission::get_instance()->get_posted_data();
     $cf7_posted_data = cf7msm_remove_honeypot_fields_from_posted_data( $cf7_posted_data );
     $is_last_step = false;
-    $is_first_step = false;
     if ( empty( $cf7_posted_data['cf7msm-step'] ) && empty( $cf7_posted_data['cf7msm_options'] ) ) {
         return;
     }
     if ( !empty( $cf7_posted_data['cf7msm_options'] ) ) {
         $options = json_decode( stripslashes( $cf7_posted_data['cf7msm_options'] ), true );
         $is_last_step = !empty( $options['last_step'] );
-        $is_first_step = !empty( $options['first_step'] );
     } else {
         if ( !empty( $cf7_posted_data['cf7msm-step'] ) && preg_match( '/(\\d+)-(\\d+)/', $cf7_posted_data['cf7msm-step'], $matches ) ) {
-            $is_first_step = !empty( $matches[1] ) && intval( $matches[1] ) === 1;
+            $is_last_step = intval( $matches[1] ) === intval( $matches[2] );
         }
     }
     // A resubmitted first step keeps the existing flow, including its pipe map
@@ -1494,7 +1508,8 @@ function cf7msm_store_data_steps() {
         $cf7_posted_data = cf7msm_remove_file_fields_from_posted_data( $cf7_posted_data );
         if ( !$is_last_step ) {
             // don't track big cookies on last step bc submitting on the last step doesn't use the cookie.
-            cf7msm_track_big_cookie( $cf7_posted_data );
+            $wpcf7 = WPCF7_ContactForm::get_current();
+            cf7msm_track_big_cookie( $cf7_posted_data, ( $wpcf7 ? $wpcf7->id() : 0 ) );
             cf7msm_set( 'cf7msm_posted_data', $cf7_posted_data );
         }
     }
@@ -1555,9 +1570,11 @@ function cf7msm_set_step(  $result, $tags  ) {
     $config = cf7msm_resolve_multistep_config( $wpcf7, $posted_data );
     if ( $config['has_new_tag'] ) {
         $is_first_step = $config['is_valid'] && !empty( $config['options']['first_step'] );
-        $missing_previous_step = !$is_first_step && empty( cf7msm_get( 'cf7msm-first-step' ) );
+        $missing_previous_step = !$is_first_step && (empty( cf7msm_get( 'cf7msm-first-step' ) ) || !cf7msm_has_previous_step_data( $posted_data ));
         if ( !$config['is_valid'] || $missing_previous_step ) {
-            $result->invalidate( $config['tag'], $wpcf7->message( 'invalid_first_step' ) );
+            $message = $wpcf7->message( 'invalid_first_step' );
+            $result->invalidate( $config['tag'], $message );
+            cf7msm_first_step_rejection( $message );
         } else {
             if ( $result->is_valid() ) {
                 cf7msm_set( 'cf7msm-first-step', 1 );
@@ -1571,13 +1588,15 @@ function cf7msm_set_step(  $result, $tags  ) {
             $curr_step = $matches[1];
             $last_step = $matches[2];
             $stored_step = cf7msm_get( 'cf7msm-step' );
-            $missing_previous_step = 1 !== intval( $curr_step ) && (empty( $stored_step ) || intval( $stored_step ) + 1 < intval( $curr_step ));
+            $missing_previous_step = 1 !== intval( $curr_step ) && (empty( $stored_step ) || intval( $stored_step ) + 1 < intval( $curr_step ) || !cf7msm_has_previous_step_data( $posted_data ));
             if ( $missing_previous_step ) {
+                $message = $wpcf7->message( 'invalid_first_step' );
                 $result->invalidate( array(
                     'type'     => 'hidden',
                     'basetype' => 'hidden',
                     'name'     => 'cf7msm-step',
-                ), $wpcf7->message( 'invalid_first_step' ) );
+                ), $message );
+                cf7msm_first_step_rejection( $message );
                 return $result;
             }
             if ( $result->is_valid() ) {
@@ -1601,6 +1620,85 @@ add_filter(
     'wpcf7_validate',
     'cf7msm_set_step',
     99,
+    2
+);
+/**
+ * Whether this request carries the answers from earlier steps.
+ *
+ * The cf7msm-first-step / cf7msm-step cookie is shared by every tab in the
+ * browser, but Pro keeps the answers per tab in sessionStorage. A later step
+ * can therefore pass the cookie check without its earlier answers.
+ *
+ * - Pro: the script posts _cf7msm_has_previous only when this tab's storage
+ *   holds earlier-step data and this page continues a step submitted in this
+ *   tab. CF7 drops `_` keys from posted data, so it is read from $_POST.
+ * - Pro without sessionStorage (cf7msm-no-ss): Pro never writes the data
+ *   cookie, so there are no earlier answers to use.
+ * - Free: always true. The data cookie is set and cleared with the shared
+ *   step cookie, which cf7msm_set_step() already checks. An oversized data
+ *   cookie is dropped by the browser, and the visitor must still be able to
+ *   finish: a mail with missing answers is better than none.
+ *
+ * @param array $posted_data The submission's posted data.
+ * @return bool
+ */
+function cf7msm_has_previous_step_data(  $posted_data  ) {
+    return true;
+}
+
+/**
+ * Remember the message a step was rejected with for being out of order.
+ *
+ * @param string|null $message The message to record. Omit to read it.
+ * @return string|null The recorded message, or null when none.
+ */
+function cf7msm_first_step_rejection(  $message = null  ) {
+    static $recorded = null;
+    if ( null !== $message ) {
+        $recorded = (string) $message;
+    }
+    return $recorded;
+}
+
+/**
+ * Show why an out-of-order step was rejected in the visible response.
+ *
+ * CF7 replies with its generic validation message and puts the reason only
+ * on the multistep tag's hidden input, which has no visible field error.
+ */
+function cf7msm_first_step_feedback_response(  $response, $result = array()  ) {
+    $message = cf7msm_first_step_rejection();
+    if ( null !== $message && is_array( $response ) && isset( $response['status'] ) && 'validation_failed' === $response['status'] ) {
+        $response['message'] = $message;
+    }
+    return $response;
+}
+
+add_filter(
+    'wpcf7_feedback_response',
+    'cf7msm_first_step_feedback_response',
+    10,
+    2
+);
+/**
+ * Same as cf7msm_first_step_feedback_response() for a full-page POST, which
+ * renders the submission's response instead of the REST reply.
+ */
+function cf7msm_first_step_submit_response(  $contact_form, $result  ) {
+    $message = cf7msm_first_step_rejection();
+    if ( null === $message || !is_array( $result ) || !isset( $result['status'] ) || 'validation_failed' !== $result['status'] ) {
+        return;
+    }
+    $submission = WPCF7_Submission::get_instance();
+    if ( $submission ) {
+        $submission->set_response( $message );
+    }
+}
+
+add_action(
+    'wpcf7_submit',
+    'cf7msm_first_step_submit_response',
+    10,
     2
 );
 /**
@@ -1677,9 +1775,10 @@ function cf7msm_mail_sent() {
         }
     }
     if ( $is_last_step ) {
-        // while the cookie could have already been cut off, I don't want to falsely trigger
-        // if cookies just plainly don't save. so just test on the last submission
-        cf7msm_maybe_set_big_cookie_notice();
+        // The size was measured as each step was saved. Near-limit sizes were
+        // already logged and counted then; this files the flow's largest size
+        // under its last-step form.
+        cf7msm_record_cookie_usage( ( $wpcf7 ? $wpcf7->id() : 0 ) );
         $stats = get_option( '_cf7msm_stats', array() );
         $count = ( !empty( $stats['count'] ) ? $stats['count'] : 0 );
         $stats['count'] = 1 + $count;
@@ -1846,63 +1945,187 @@ add_action(
     2
 );
 /**
- * Track big cookies
+ * The largest saved-data cookie of the current flow.
+ *
+ * @return array {
+ *     @type int    $size Largest cookie in bytes; 0 when none was tracked.
+ *     @type int    $form Form whose log holds the flow's near-limit entry.
+ *     @type string $id   That log entry's id; empty until the flow nears the limit.
+ * }
  */
-function cf7msm_track_big_cookie(  $posted_data  ) {
-    // -1 if cookie is not set.
-    $has_big_cookie = cf7msm_get( 'cf7msm_big_cookie', -1 );
-    if ( cf7msm_cookie_size( $posted_data ) >= CF7MSM_COOKIE_SIZE_THRESHOLD ) {
-        cf7msm_set( 'cf7msm_big_cookie', 1 );
-    } else {
-        if ( $has_big_cookie == -1 ) {
-            cf7msm_set( 'cf7msm_big_cookie', 0 );
-        }
+function cf7msm_get_big_cookie() {
+    $value = cf7msm_get( 'cf7msm_big_cookie', 0 );
+    if ( !is_array( $value ) ) {
+        // Earlier versions stored only the size (or 1 as a flag).
+        $value = array(
+            'size' => $value,
+        );
     }
+    return array(
+        'size' => ( isset( $value['size'] ) ? intval( $value['size'] ) : 0 ),
+        'form' => ( isset( $value['form'] ) ? intval( $value['form'] ) : 0 ),
+        'id'   => ( isset( $value['id'] ) && is_string( $value['id'] ) ? $value['id'] : '' ),
+    );
 }
 
 /**
- * Since posted data can be truncated after setting it to a cookie, 
- * get size of the actual posted_data and add then the cookie.
+ * Remember the largest saved-data cookie written during this flow. The size is
+ * kept in its own small cookie so it survives the browser rejecting an
+ * oversized cf7msm_posted_data cookie.
+ *
+ * The peak is kept until the flow completes, including when the first step is
+ * submitted again (for example after going back), so one flow is counted once.
+ *
+ * As soon as the flow nears the limit it is logged and counted toward the admin
+ * notice, without waiting for the last step: a flow that loses data may never
+ * be completed.
+ */
+function cf7msm_track_big_cookie(  $posted_data, $form_id = 0  ) {
+    if ( cf7msm_activate_php_session( true ) ) {
+        // Data is kept in the PHP session, so no cookie limit applies.
+        return;
+    }
+    $size = cf7msm_cookie_size( $posted_data );
+    $big = cf7msm_get_big_cookie();
+    if ( $size <= $big['size'] ) {
+        if ( $size > CF7MSM_COOKIE_SIZE_LIMIT ) {
+            cf7msm_maybe_set_big_cookie_notice( $size, false );
+        }
+        return;
+    }
+    $big['size'] = $size;
+    $form_id = intval( $form_id );
+    if ( $size >= CF7MSM_COOKIE_SIZE_THRESHOLD && $form_id > 0 ) {
+        $is_counted = !empty( $big['id'] );
+        $id = ( $is_counted ? $big['id'] : wp_generate_password( 12, false ) );
+        // Replace the flow's earlier entry, so the widget lists its latest, largest size.
+        cf7msm_cookie_log_add(
+            $form_id,
+            array(
+                'time'       => time(),
+                'size'       => $size,
+                'id'         => $id,
+                'incomplete' => true,
+            ),
+            $big['form'],
+            $big['id']
+        );
+        cf7msm_maybe_set_big_cookie_notice( $size, !$is_counted );
+        $big['form'] = $form_id;
+        $big['id'] = $id;
+    }
+    cf7msm_set( 'cf7msm_big_cookie', $big );
+}
+
+/**
+ * Bytes the browser counts against its per-cookie limit for the saved form
+ * data: the cookie name plus the value as setcookie() encodes it. Measured
+ * before sending, because the browser drops a cookie that is too large.
  */
 function cf7msm_cookie_size(  $posted_data = array()  ) {
-    $size = 0;
-    foreach ( $posted_data as $key => $value ) {
-        $size += mb_strlen( $key, '8bit' );
-        $size += mb_strlen( json_encode( $value, JSON_UNESCAPED_UNICODE ), '8bit' );
-    }
-    if ( !empty( $_COOKIE ) ) {
-        foreach ( $_COOKIE as $key => $value ) {
-            if ( $key == 'cf7msm_posted_data' ) {
-                continue;
-            }
-            $size += mb_strlen( $key, '8bit' );
-            if ( is_array( $value ) ) {
-                $size += mb_strlen( json_encode( $value, JSON_UNESCAPED_UNICODE ), '8bit' );
-            } else {
-                $size += mb_strlen( $value, '8bit' );
-            }
-        }
-    }
-    return $size;
+    $posted_data = cf7msm_sanitize_posted_data( wp_unslash( $posted_data ) );
+    $json_encoded = json_encode( $posted_data, JSON_UNESCAPED_UNICODE );
+    return strlen( 'cf7msm_posted_data' ) + strlen( rawurlencode( (string) $json_encoded ) );
 }
 
 /**
- * Set the notice of a big cookie.
+ * Log the cookie size of a completed flow under its last-step form, replacing
+ * the entry logged when the flow neared the limit, and count the flow toward
+ * the admin notice if that did not happen yet.
+ *
+ * @return int The flow's largest cookie in bytes, or 0 when none was tracked.
  */
-function cf7msm_maybe_set_big_cookie_notice() {
-    if ( cf7msm_fs()->can_use_premium_code() ) {
+function cf7msm_record_cookie_usage(  $form_id  ) {
+    $form_id = intval( $form_id );
+    $big = cf7msm_get_big_cookie();
+    // 1 is the flag written by versions that did not store the size.
+    if ( $big['size'] <= 1 || $form_id <= 0 ) {
+        return 0;
+    }
+    cf7msm_cookie_log_add(
+        $form_id,
+        array(
+            'time' => time(),
+            'size' => $big['size'],
+        ),
+        $big['form'],
+        $big['id']
+    );
+    if ( empty( $big['id'] ) ) {
+        // Not counted while saving a step, e.g. a flow started before an update.
+        cf7msm_maybe_set_big_cookie_notice( $big['size'] );
+    }
+    return $big['size'];
+}
+
+/**
+ * Add an entry to the cookie size log, keeping the last 3 per form and the 20
+ * most recently used forms.
+ *
+ * @param int    $form_id     Form to list the entry under.
+ * @param array  $entry       { time, size, id?, incomplete? }
+ * @param int    $old_form_id Form holding the same flow's earlier entry.
+ * @param string $old_id      Id of that entry, which is removed.
+ */
+function cf7msm_cookie_log_add(
+    $form_id,
+    $entry,
+    $old_form_id = 0,
+    $old_id = ''
+) {
+    $log = get_option( '_cf7msm_cookie_log', array() );
+    if ( !is_array( $log ) ) {
+        $log = array();
+    }
+    if ( '' !== $old_id && isset( $log[$old_form_id] ) && is_array( $log[$old_form_id] ) ) {
+        $log[$old_form_id] = array_values( array_filter( $log[$old_form_id], function ( $old ) use($old_id) {
+            return !is_array( $old ) || !isset( $old['id'] ) || $old['id'] !== $old_id;
+        } ) );
+        if ( empty( $log[$old_form_id] ) ) {
+            unset($log[$old_form_id]);
+        }
+    }
+    $entries = ( isset( $log[$form_id] ) && is_array( $log[$form_id] ) ? $log[$form_id] : array() );
+    array_unshift( $entries, $entry );
+    // Re-add the form so the most recently used flows stay at the end.
+    unset($log[$form_id]);
+    $log[$form_id] = array_slice( $entries, 0, 3 );
+    $log = array_slice(
+        $log,
+        -20,
+        null,
+        true
+    );
+    update_option( '_cf7msm_cookie_log', $log, false );
+}
+
+/**
+ * Count a flow whose cookie came close to, or went over, the limit. A new
+ * over-limit save restores dismissed warnings, even in an already-counted flow,
+ * once 24 hours have passed since the dismissal (see
+ * cf7msm_maybe_display_notice_big_cookie()).
+ *
+ * @param int  $size       Saved-data cookie size in bytes.
+ * @param bool $count_flow Whether this flow still needs to be counted.
+ */
+function cf7msm_maybe_set_big_cookie_notice(  $size = 0, $count_flow = true  ) {
+    if ( $size < CF7MSM_COOKIE_SIZE_THRESHOLD ) {
         return;
     }
     $stats = get_option( '_cf7msm_stats', array() );
-    $notice = ( !empty( $stats['notice-big-cookie'] ) ? $stats['notice-big-cookie'] : '' );
-    $has_big_cookie = cf7msm_get( 'cf7msm_big_cookie', -1 );
-    if ( $notice !== 'no' && $has_big_cookie == 1 ) {
+    if ( $count_flow ) {
         if ( empty( $stats['big_cookies'] ) ) {
             $stats['big_cookies'] = 0;
         }
         $stats['big_cookies'] += 1;
-        update_option( '_cf7msm_stats', $stats );
     }
+    if ( $size > CF7MSM_COOKIE_SIZE_LIMIT ) {
+        // Flows started before the free-build license fix may have a log id
+        // without a counter. Ensure their next over-limit save can warn too.
+        $stats['big_cookies'] = max( 1, ( isset( $stats['big_cookies'] ) ? intval( $stats['big_cookies'] ) : 0 ) );
+        unset($stats['notice-big-cookie']);
+    }
+    update_option( '_cf7msm_stats', $stats );
 }
 
 /**

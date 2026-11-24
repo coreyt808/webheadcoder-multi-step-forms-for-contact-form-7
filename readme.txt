@@ -4,7 +4,7 @@ Tags: contact form 7, multistep form, multi page form, form persistence
 Requires at least: 5.9
 Requires PHP: 7.3
 Tested up to: 7.1
-Stable tag: 4.8
+Stable tag: 4.8.1
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -115,6 +115,13 @@ This message usually means step-tracking data is missing. Check these first:
 3. The first form is missing `first_step` in its multistep tag, for example:
 `[multistep multistep-123 first_step "/your-next-url/"]`
 
+= Why does the last step say to fill out the previous page? =
+A later step is only accepted after the first step was completed in the same browser.
+
+* PRO: the answers from the earlier steps must also come with it, or the email would be sent without them. Answers are kept per browser tab. Continue in the tab where you started; a step opened in a new tab or window, or typed into the address bar, has no earlier answers. Go back to the first step in that tab.
+* PRO: a browser that blocks storage (some private modes, or blocked site data) cannot keep the answers. The form shows a warning on every step.
+* Free: answers are kept in a cookie. If that cookie is too large for the browser (about 4 KB) or stripped by a cache, the later step is still accepted, but the email is missing those answers. The Cookie Size widget on the Contact Form 7 dashboard shows when forms come close to the limit.
+
 = Why are no values being passed from one form to the next form? =
 If the page reloads on submit instead of using AJAX, Contact Form 7 JavaScript is not running correctly or the REST API is disabled.
 
@@ -183,6 +190,13 @@ Add a hidden field with the same name on the last step, for example:
 This ensures the final step submits either the saved value or a blank value.
 
 == Changelog ==
+
+= 4.8.1 - November 2026 =
+* added cookie size for the latest submissions of each multi-step form.
+* fixed the accuracy of the warning shown when form submissions are close to the browser's cookie size limit.  
+* PRO: fixed the last step being accepted without the earlier answers (for example when opened in a new tab). It is now rejected and says why.  
+* fixed forms not continuing to the next step when the browser blocks storage. PRO: a warning now explains that answers may not be submitted.  
+* After updating, clear page and asset caches so visitors get the new script.  
 
 = 4.8 - November 2026 =
 * PRO: added file uploads on any step.  

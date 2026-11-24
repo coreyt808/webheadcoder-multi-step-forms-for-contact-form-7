@@ -8,7 +8,7 @@ Requires Plugins:  contact-form-7
 Requires PHP: 7.3
 Author: Webhead LLC.
 Author URI: https://webheadcoder.com/
-Version: 4.8
+Version: 4.8.1
 Text Domain: contact-form-7-multi-step-module
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -76,12 +76,14 @@ if ( function_exists( 'cf7msm_fs' ) ) {
         cf7msm_fs();
         // Signal that SDK was initiated.
         do_action( 'cf7msm_fs_loaded' );
-        define( 'CF7MSM_VERSION', '4.8' );
+        define( 'CF7MSM_VERSION', '4.8.1' );
         define( 'CF7MSM_PLUGIN', __FILE__ );
         define( 'CF7MSM_FREE_TEXT_PREFIX_RADIO', '_wpcf7_free_text_' );
         define( 'CF7MSM_FREE_TEXT_PREFIX_CHECKBOX', '_wpcf7_free_text_' );
         define( 'CF7MSM_MIN_CF7_VERSION', '5.6' );
         define( 'CF7MSM_LEARN_MORE_URL', 'https://webheadcoder.com/contact-form-7-multi-step-forms/#pro' );
+        define( 'CF7MSM_COOKIE_SIZE_LIMIT', 4093 );
+        // smallest per-cookie limit among major browsers
         define( 'CF7MSM_COOKIE_SIZE_THRESHOLD', 3684 );
         //4093 * 90%
         /**
@@ -168,6 +170,7 @@ if ( function_exists( 'cf7msm_fs' ) ) {
          */
         function cf7msm_deactivation() {
             delete_option( '_cf7msm_stats' );
+            delete_option( '_cf7msm_cookie_log' );
             delete_option( '_cf7msm_version' );
             cf7msm_uploads_unschedule_cleanup();
         }
